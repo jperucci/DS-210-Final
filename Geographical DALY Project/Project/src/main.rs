@@ -1,121 +1,144 @@
-
-use csv::{ReaderBuilder, WriterBuilder};
+use csv::Reader;
+use rand::seq::SliceRandom;
+use std::collections::HashMap;
 use std::error::Error;
-use std::fs;
-fn parse_csv(file_path: &str) -> Result<Vec<Vec<String>>, Box<dyn Error>> {
-    let mut rdr = ReaderBuilder::new().has_headers(true).from_path(file_path)?;
-    let mut data = Vec::new();
+#[derive(Debug, Clone, PartialEq)]
+struct Country {
+    name: String,
+    communicable: f64,
+    non_communicable: f64,
+    co2: f64,
+    cluster: Option<usize>,
+}
+fn load_data(file_path: &str) -> Result<Vec<Country>, Box<dyn Error>> {
+    let mut reader = Reader::from_path(file_path)?;
+    let mut countries = Vec::new();
 
-    for result in rdr.records() {
+    for result in reader.records() {
         let record = result?;
-        data.push(record.iter().map(|s| s.to_string()).collect());
-    }
+        let name = record.get(0).unwrap_or_default().to_string();
+        let communicable = record.get(8).unwrap_or("0.0").parse().unwrap_or(0.0);
+        let non_communicable = record.get(9).unwrap_or("0.0").parse().unwrap_or(0.0);
+        let co2 = record.get(12).unwrap_or("0.0").parse().unwrap_or(0.0);
 
-    Ok(data)
-}
-fn clean_data(data: Vec<Vec<String>>) -> Vec<Vec<String>> {
-    let mut cleaned_data = Vec::new();
-    for row in data {
-        if row.iter().all(|val| !val.trim().is_empty()) {
-            cleaned_data.push(row);
+        if communicable != 0.0 || non_communicable != 0.0 || co2 != 0.0 {
+            countries.push(Country {
+                name,
+                communicable,
+                non_communicable,
+                co2,
+                cluster: None,
+            });
         }
     }
 
-    cleaned_data
+    Ok(countries)
 }
-fn normalize_data(data: &mut Vec<Vec<String>>) {
-    if data.is_empty() {
-        return;
-    }
-    let num_cols = data[0].len();
-    let mut min_vals = vec![f64::MAX; num_cols];
-    let mut max_vals = vec![f64::MIN; num_cols];
-    for row in data.iter() {
-        for (i, val) in row.iter().enumerate() {
-            if let Ok(num) = val.parse::<f64>() {
-                if num < min_vals[i] {
-                    min_vals[i] = num;
-                }
-                if num > max_vals[i] {
-                    max_vals[i] = num;
-                }
+
+fn initialize_centroids(countries: &[Country], k: usize) -> Vec<Country> {
+    let mut rng = rand::thread_rng();
+    let centroids: Vec<Country> = countries.choose_multiple(&mut rng, k).cloned().collect();
+    centroids
+}
+
+fn assign_clusters(countries: &mut [Country], centroids: &[Country]) {
+    for country in countries.iter_mut() {
+        let mut min_distance = f64::MAX;
+        let mut assigned_cluster = 0;
+
+        for (i, centroid) in centroids.iter().enumerate() {
+            let distance = euclidean_distance(country, centroid);
+            if distance < min_distance {
+                min_distance = distance;
+                assigned_cluster = i;
             }
         }
-    }
-    for row in data.iter_mut() {
-        for (i, val) in row.iter_mut().enumerate() {
-            if let Ok(num) = val.parse::<f64>() {
-                let range = max_vals[i] - min_vals[i];
-                let normalized = if range == 0.0 { 0.0 } else { (num - min_vals[i]) / range };
-                *val = normalized.to_string();
-            }
-        }
+
+        country.cluster = Some(assigned_cluster);
     }
 }
-fn write_cleaned_csv(data: Vec<Vec<String>>, output_path: &str) -> Result<(), Box<dyn Error>> {
-    let mut wtr = WriterBuilder::new().from_path(output_path)?;
 
-    for row in data {
-        wtr.write_record(row)?;
-    }
+fn update_centroids(countries: &[Country], k: usize) -> Vec<Country> {
+    let mut new_centroids = vec![
+        Country {
+            name: String::new(),
+            communicable: 0.0,
+            non_communicable: 0.0,
+            co2: 0.0,
+            cluster: None,
+        };
+        k
+    ];
+    let mut counts = vec![0; k];
 
-    wtr.flush()?;
-    Ok(())
-}
-fn build_graph(data: Vec<Vec<String>>, threshold: f64) -> Vec<Vec<usize>> {
-    let mut graph = vec![vec![]; data.len()];
-
-    for i in 0..data.len() {
-        for j in 0..data.len() {
-            if i != j {
-                let distance = calculate_distance(&data[i], &data[j]);
-                if distance < threshold {
-                    graph[i].push(j);
-                }
-            }
+    for country in countries {
+        if let Some(cluster) = country.cluster {
+            new_centroids[cluster].communicable += country.communicable;
+            new_centroids[cluster].non_communicable += country.non_communicable;
+            new_centroids[cluster].co2 += country.co2;
+            counts[cluster] += 1;
         }
     }
 
-    graph
+    for (i, centroid) in new_centroids.iter_mut().enumerate() {
+        if counts[i] > 0 {
+            centroid.communicable /= counts[i] as f64;
+            centroid.non_communicable /= counts[i] as f64;
+            centroid.co2 /= counts[i] as f64;
+        }
+    }
+
+    new_centroids
 }
 
-fn calculate_distance(row1: &Vec<String>, row2: &Vec<String>) -> f64 {
-    row1.iter()
-        .zip(row2.iter())
-        .filter_map(|(val1, val2)| {
-            if let (Ok(num1), Ok(num2)) = (val1.parse::<f64>(), val2.parse::<f64>()) {
-                Some((num1 - num2).powi(2))
-            } else {
-                None
-            }
-        })
-        .sum::<f64>()
-        .sqrt()
+fn euclidean_distance(country: &Country, centroid: &Country) -> f64 {
+    ((country.communicable - centroid.communicable).powi(2)
+        + (country.non_communicable - centroid.non_communicable).powi(2)
+        + (country.co2 - centroid.co2).powi(2))
+    .sqrt()
 }
+
+fn kmeans(mut countries: Vec<Country>, k: usize, max_iterations: usize) -> Vec<Country> {
+    let mut centroids = initialize_centroids(&countries, k);
+
+    for _ in 0..max_iterations {
+        assign_clusters(&mut countries, &centroids);
+        let new_centroids = update_centroids(&countries, k);
+
+        if centroids == new_centroids {
+            break;
+        }
+
+        centroids = new_centroids;
+    }
+
+    countries
+}
+use std::collections::HashSet;
 
 fn main() -> Result<(), Box<dyn Error>> {
+    let file_path = "life expectancy.csv";
+    let countries = load_data(file_path)?;
 
-    let input_file = "life expectancy.csv";
-    let output_file = "cleaned_life_expectancy.csv";
+    if countries.is_empty() {
+        println!("No valid data found in the file.");
+        return Ok(());
+    }
 
+    let k = 5;
+    let max_iterations = 100;
+    let clustered_countries = kmeans(countries, k, max_iterations);
 
-    let mut data = parse_csv(input_file)?;
-    
+    // Use a HashSet to filter out duplicates
+    let mut unique_results = HashSet::new();
+    for country in &clustered_countries {
+        unique_results.insert((country.name.clone(), country.cluster.unwrap_or_default()));
+    }
 
-    data = clean_data(data);
+    // Print unique results
+    for (name, cluster) in unique_results {
+        println!("{} - Cluster: {}", name, cluster);
+    }
 
-    normalize_data(&mut data);
-    
-
-    write_cleaned_csv(data.clone(), output_file)?;
-    println!("Data cleaned and saved to {}", output_file);
-
-
-    let threshold = 0.5; 
-    let graph = build_graph(data, threshold);
-    println!("Graph built with {} nodes.", graph.len());
-
-    // Placeholder for K-Means clustering
-    
     Ok(())
 }
