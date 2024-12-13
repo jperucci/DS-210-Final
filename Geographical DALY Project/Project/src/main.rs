@@ -1,7 +1,8 @@
-use csv::Reader;
+use csv::ReaderBuilder;
 use rand::seq::SliceRandom;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
+
 #[derive(Debug, Clone, PartialEq)]
 struct Country {
     name: String,
@@ -10,8 +11,28 @@ struct Country {
     co2: f64,
     cluster: Option<usize>,
 }
-fn load_data(file_path: &str) -> Result<Vec<Country>, Box<dyn Error>> {
-    let mut reader = Reader::from_path(file_path)?;
+
+// Hashable representation of a country.
+#[derive(Hash, Eq, PartialEq, Debug)]
+struct HashableCountry {
+    name: String,
+    communicable: i64,
+    non_communicable: i64,
+    co2: i64,
+}
+
+fn convert_to_hashable(country: &Country) -> HashableCountry {
+    HashableCountry {
+        name: country.name.clone(),
+        communicable: (country.communicable * 1000.0) as i64, // Scale for precision.
+        non_communicable: (country.non_communicable * 1000.0) as i64,
+        co2: (country.co2 * 1000.0) as i64,
+    }
+}
+
+fn load_and_clean_data(file_path: &str) -> Result<Vec<Country>, Box<dyn Error>> {
+    let mut reader = ReaderBuilder::new().has_headers(true).from_path(file_path)?;
+    let mut seen_countries = HashSet::new();
     let mut countries = Vec::new();
 
     for result in reader.records() {
@@ -21,7 +42,10 @@ fn load_data(file_path: &str) -> Result<Vec<Country>, Box<dyn Error>> {
         let non_communicable = record.get(9).unwrap_or("0.0").parse().unwrap_or(0.0);
         let co2 = record.get(12).unwrap_or("0.0").parse().unwrap_or(0.0);
 
-        if communicable != 0.0 || non_communicable != 0.0 || co2 != 0.0 {
+        if (communicable != 0.0 || non_communicable != 0.0 || co2 != 0.0)
+            && !seen_countries.contains(&name)
+        {
+            seen_countries.insert(name.clone());
             countries.push(Country {
                 name,
                 communicable,
@@ -32,13 +56,13 @@ fn load_data(file_path: &str) -> Result<Vec<Country>, Box<dyn Error>> {
         }
     }
 
+    println!("Loaded and cleaned {} unique countries.", countries.len());
     Ok(countries)
 }
 
 fn initialize_centroids(countries: &[Country], k: usize) -> Vec<Country> {
     let mut rng = rand::thread_rng();
-    let centroids: Vec<Country> = countries.choose_multiple(&mut rng, k).cloned().collect();
-    centroids
+    countries.choose_multiple(&mut rng, k).cloned().collect()
 }
 
 fn assign_clusters(countries: &mut [Country], centroids: &[Country]) {
@@ -114,31 +138,143 @@ fn kmeans(mut countries: Vec<Country>, k: usize, max_iterations: usize) -> Vec<C
 
     countries
 }
-use std::collections::HashSet;
+
+fn build_graph(countries: &[Country], threshold: f64) -> Vec<(String, Vec<String>)> {
+    let mut adjacency_list = Vec::new();
+
+    for country in countries {
+        let mut neighbors = Vec::new();
+        for other in countries {
+            if country.name != other.name {
+                let distance = euclidean_distance(country, other);
+                if distance < threshold {
+                    neighbors.push(other.name.clone());
+                }
+            }
+        }
+        adjacency_list.push((country.name.clone(), neighbors));
+    }
+
+    adjacency_list
+}
 
 fn main() -> Result<(), Box<dyn Error>> {
     let file_path = "life expectancy.csv";
-    let countries = load_data(file_path)?;
+    let countries = load_and_clean_data(file_path)?;
 
     if countries.is_empty() {
-        println!("No valid data found in the file.");
+        println!("No valid data found.");
         return Ok(());
     }
 
+    // Step 1: Perform K-Means Clustering
     let k = 5;
     let max_iterations = 100;
-    let clustered_countries = kmeans(countries, k, max_iterations);
+    let clustered_countries = kmeans(countries.clone(), k, max_iterations);
 
-    // Use a HashSet to filter out duplicates
-    let mut unique_results = HashSet::new();
-    for country in &clustered_countries {
-        unique_results.insert((country.name.clone(), country.cluster.unwrap_or_default()));
+    // Step 2: Build Graph Based on Threshold
+    let threshold = 0.5;
+    let graph = build_graph(&clustered_countries, threshold);
+
+    println!("Graph connections:");
+    for (country, neighbors) in graph {
+        println!("{} -> {:?}", country, neighbors);
     }
 
-    // Print unique results
-    for (name, cluster) in unique_results {
-        println!("{} - Cluster: {}", name, cluster);
+    println!("\nClustered Results:");
+    for country in clustered_countries {
+        println!("{} - Cluster: {}", country.name, country.cluster.unwrap_or_default());
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_load_and_clean_data() {
+        let file_path = "life expectancy.csv";
+        let result = load_and_clean_data(file_path);
+        assert!(result.is_ok());
+        let countries = result.unwrap();
+        assert!(countries.len() > 0);
+    }
+
+    #[test]
+    fn test_euclidean_distance() {
+        let country1 = Country {
+            name: "CountryA".to_string(),
+            communicable: 10.0,
+            non_communicable: 20.0,
+            co2: 5.0,
+            cluster: None,
+        };
+
+        let country2 = Country {
+            name: "CountryB".to_string(),
+            communicable: 15.0,
+            non_communicable: 25.0,
+            co2: 10.0,
+            cluster: None,
+        };
+
+        let distance = euclidean_distance(&country1, &country2);
+        assert!(distance > 0.0);
+    }
+
+    #[test]
+    fn test_kmeans() {
+        let countries = vec![
+            Country {
+                name: "CountryA".to_string(),
+                communicable: 10.0,
+                non_communicable: 20.0,
+                co2: 5.0,
+                cluster: None,
+            },
+            Country {
+                name: "CountryB".to_string(),
+                communicable: 15.0,
+                non_communicable: 25.0,
+                co2: 10.0,
+                cluster: None,
+            },
+            Country {
+                name: "CountryC".to_string(),
+                communicable: 30.0,
+                non_communicable: 35.0,
+                co2: 20.0,
+                cluster: None,
+            },
+        ];
+
+        let clustered_countries = kmeans(countries, 2, 10);
+        assert!(clustered_countries.len() > 0);
+        assert!(clustered_countries.iter().all(|c| c.cluster.is_some()));
+    }
+
+    #[test]
+    fn test_build_graph() {
+        let countries = vec![
+            Country {
+                name: "CountryA".to_string(),
+                communicable: 10.0,
+                non_communicable: 20.0,
+                co2: 5.0,
+                cluster: None,
+            },
+            Country {
+                name: "CountryB".to_string(),
+                communicable: 15.0,
+                non_communicable: 25.0,
+                co2: 10.0,
+                cluster: None,
+            },
+        ];
+
+        let graph = build_graph(&countries, 10.0);
+        assert_eq!(graph.len(), 2);
+    }
 }
