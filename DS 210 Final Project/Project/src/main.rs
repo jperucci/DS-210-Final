@@ -1,10 +1,7 @@
 mod load_and_clean_data;
-
 use load_and_clean_data::load_and_clean_data;
 use rand::seq::SliceRandom;
-use std::collections::HashMap;
 use std::error::Error;
-
 #[derive(Debug, Clone, PartialEq)]
 struct Country {
     name: String,
@@ -13,29 +10,10 @@ struct Country {
     co2: f64,
     cluster: Option<usize>,
 }
-
-#[derive(Hash, Eq, PartialEq, Debug)]
-struct HashableCountry {
-    name: String,
-    communicable: i64,
-    non_communicable: i64,
-    co2: i64,
-}
-
-fn convert_to_hashable(country: &Country) -> HashableCountry {
-    HashableCountry {
-        name: country.name.clone(),
-        communicable: (country.communicable * 1000.0) as i64, // Scale for precision.
-        non_communicable: (country.non_communicable * 1000.0) as i64,
-        co2: (country.co2 * 1000.0) as i64,
-    }
-}
-
 fn initialize_centroids(countries: &[Country], k: usize) -> Vec<Country> {
     let mut rng = rand::thread_rng();
     countries.choose_multiple(&mut rng, k).cloned().collect()
 }
-
 fn assign_clusters(countries: &mut [Country], centroids: &[Country]) {
     for country in countries.iter_mut() {
         let mut min_distance = f64::MAX;
@@ -52,7 +30,6 @@ fn assign_clusters(countries: &mut [Country], centroids: &[Country]) {
         country.cluster = Some(assigned_cluster);
     }
 }
-
 fn update_centroids(countries: &[Country], k: usize) -> Vec<Country> {
     let mut new_centroids = vec![
         Country {
@@ -65,7 +42,6 @@ fn update_centroids(countries: &[Country], k: usize) -> Vec<Country> {
         k
     ];
     let mut counts = vec![0; k];
-
     for country in countries {
         if let Some(cluster) = country.cluster {
             new_centroids[cluster].communicable += country.communicable;
@@ -74,7 +50,6 @@ fn update_centroids(countries: &[Country], k: usize) -> Vec<Country> {
             counts[cluster] += 1;
         }
     }
-
     for (i, centroid) in new_centroids.iter_mut().enumerate() {
         if counts[i] > 0 {
             centroid.communicable /= counts[i] as f64;
@@ -82,20 +57,16 @@ fn update_centroids(countries: &[Country], k: usize) -> Vec<Country> {
             centroid.co2 /= counts[i] as f64;
         }
     }
-
     new_centroids
 }
-
 fn euclidean_distance(country: &Country, centroid: &Country) -> f64 {
     ((country.communicable - centroid.communicable).powi(2)
         + (country.non_communicable - centroid.non_communicable).powi(2)
         + (country.co2 - centroid.co2).powi(2))
     .sqrt()
 }
-
 fn kmeans(mut countries: Vec<Country>, k: usize, max_iterations: usize) -> Vec<Country> {
     let mut centroids = initialize_centroids(&countries, k);
-
     for _ in 0..max_iterations {
         assign_clusters(&mut countries, &centroids);
         let new_centroids = update_centroids(&countries, k);
@@ -103,16 +74,12 @@ fn kmeans(mut countries: Vec<Country>, k: usize, max_iterations: usize) -> Vec<C
         if centroids == new_centroids {
             break;
         }
-
         centroids = new_centroids;
     }
-
     countries
 }
-
 fn build_graph(countries: &[Country], threshold: f64) -> Vec<(String, Vec<String>)> {
     let mut adjacency_list = Vec::new();
-
     for country in countries {
         let mut neighbors = Vec::new();
         for other in countries {
@@ -125,25 +92,20 @@ fn build_graph(countries: &[Country], threshold: f64) -> Vec<(String, Vec<String
         }
         adjacency_list.push((country.name.clone(), neighbors));
     }
-
     adjacency_list
 }
-
 fn main() -> Result<(), Box<dyn Error>> {
     let file_path = "life expectancy.csv";
     let countries = load_and_clean_data(file_path)?;
-
     if countries.is_empty() {
         println!("No valid data found.");
         return Ok(());
     }
 
-    // Step 1: Perform K-Means Clustering
     let k = 5;
     let max_iterations = 100;
     let clustered_countries = kmeans(countries.clone(), k, max_iterations);
 
-    // Step 2: Build Graph Based on Threshold
     let threshold = 0.5;
     let graph = build_graph(&clustered_countries, threshold);
 
